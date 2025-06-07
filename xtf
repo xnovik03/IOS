@@ -1,0 +1,200 @@
+#!/bin/sh
+# Nastavi promenne prostredi POSIXLY_CORRECT a LC_COLLATE na specif. hodnoty
+export POSIXLY_CORRECT=yes
+export LC_COLLATE=C
+#Exportuje promennou prostredi XTF_PROFIT
+export XTF_PROFIT
+# Pokud neni promenna XTF_PROFIT nastavena nastav ji na hodnotu 20
+if [ -z "$XTF_PROFIT" ]; then
+    XTF_PROFIT=20
+fi
+
+# Funkce pro vypis napovedy
+print_help() {
+    echo "Použití: xtf [-h|--help] [FILTR] [PŘÍKAZ] UŽIVATEL LOG [LOG2 ...]"
+    echo "Help:"
+    echo "  -h, --help             Zobrazí tuto nápovědu a ukončí skript"
+    echo "Příkazy:"
+    echo "  list                   Vypíše záznamy pro konkrétního uživatele"
+    echo "  list-currency          Vypíše seřazený seznam měn"
+    echo "  status                 Vypíše aktuální stav účtu"
+    echo "  profit                 Vypíše stav účtu s fiktivním ziskem"
+    echo "Filtry:"
+    echo "  -a DATETIME            Uvažuje záznamy po určitém DATETIME"
+    echo "  -b DATETIME            Uvažuje záznamy před určitým DATETIME"
+    echo "  -c MĚNA                Uvažuje záznamy pro konkrétní měnu"
+}
+# Funkce pro filtrovani zaznamu po case
+aftertime() {
+    out=$(echo "$out" | awk -F ';' \
+           -v after="$AFTERTIME"    \
+           '{ if ($2 > after) print }')
+}
+# Funkce pro filtrovani zaznamu pred casem
+beforetime() {
+    out=$(echo "$out" | awk -F ';' \
+        -v before="$BEFORETIME" \
+        '{ if ($2 < before) print }')
+}
+# Funkce pro filtrovani zaznamu podle meny
+currency() {
+    out=$(echo "$out" | awk -F ';' \
+        -v "currency=$CURRENCY" \
+        '{ if ($3 == currency) print }')
+}
+# Funkce pro vypis zaznamu pro konkretniho uzivatele
+list() {
+
+    out=$(echo "$out" | awk -F ';' -v "user=$USER" '{ if ($1 == user) print }')
+}
+# Funkce pro vypis serazeneho seznamu men
+list_currency() {
+
+    out=$(echo "$out" | awk -F ';' -v "user=$USER" -v "currency=$CURRENCY" '{ if ($1 == user && $3 ~ currency) print $3 }' | sort -u)
+}
+# Funkce pro vypis aktualniho stavu uctu 
+status(){
+    out=$(echo "$out" | LC_NUMERIC="en_US.UTF-8" awk -F ';' -v "user=$USER" '
+        { if ($1 == user) { sum[$3] += $4 } }
+        END { for (currency in sum) { printf("%s : %.4f\n", currency, sum[currency]) } }' | LC_ALL=C sort)
+        }
+# Funkce pro vypocet zisku s fiktivnim ziskem        
+profit() {
+
+    out=$(printf "%b\n" "$out" | awk -F ';'  -v XTF_PROFIT="$XTF_PROFIT" -v USER="$USER" '
+    BEGIN {
+    # Nastavime oddelovac  na ":"
+        OFS=" : "; 
+    }{
+    if ($1 == USER){
+    
+        PROFIT=$4; 
+        # Skontrolujeme na kladnost 
+        if (PROFIT > 0) { 
+        # Vypocteme zisk
+            PROFIT=PROFIT+(PROFIT*XTF_PROFIT/100); 
+        }
+        # Pridame zisk k potrebujici mene
+        profits[$3] += PROFIT;
+        }}
+        END{
+        for (currency in profits) {
+        #Odformatujeme 
+        printf "%s%s%.4f\n", currency, OFS, profits[currency];
+        }
+        }
+' | sort -u)
+}
+# Zpracovani prepinacu
+COMMAND="list"
+USER=""
+AFTERTIME=""
+BEFORETIME=""
+CURRENCY=""
+INPUT=""
+
+# Pokud je zadany -h nebo --help vypise napovedu a ukonci skript
+if [ "$1" = "-h" ] || [ "$1" = "--help" ]; then
+    print_help
+    exit 0
+fi
+
+# Skontrolujeme spravnost zadanych argumentu
+
+# Pokud je pocet argumentu mensi nez 2 vypise chybu a ukonci skript
+if [ $# -lt 2 ]; then
+    echo "ERROR: Musíte zadat alespoň uživatele a logy!" >&2
+    exit 1
+fi
+
+
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        list-currency)
+            COMMAND="list-currency"
+            shift
+            ;;
+        list | profit | status)
+            COMMAND="$1"
+            shift
+            ;;
+       
+        -a)
+            AFTERTIME="$2"
+            shift 2
+            ;;
+        -b)
+            BEFORETIME="$2"
+            shift 2
+            ;;
+        -c)
+            CURRENCY="$2"
+            shift 2
+            ;;
+        *.gz)
+        GZIP_FILES="$1"
+        if [ -r "$GZIP_FILES" ]; then
+            INPUT="$INPUT$(gzip -d -c "$GZIP_FILES" | cat )" 
+            INPUT=$(printf "%s" "$INPUT" "\n")            
+        else
+            echo "ERROR: Soubor .gz nelze otevřít!" 1>&2
+            exit 1
+        fi
+        shift
+        
+        ;;
+        *)
+            USER="$1"
+            shift
+            LOG="$1"
+            if [ -r "$LOG" ]; then
+            INPUT="$INPUT$(cat "$LOG")"      
+           INPUT=$(printf "%s" "$INPUT" "\n") 
+        else
+            echo "ERROR: Soubor nelze otevřít!" 1>&2
+            exit 1
+            fi
+            shift 
+            ;;
+    esac
+done
+# Zpracovani prepinacu a argumentu
+
+if [ -z "$INPUT" ]; then
+    INPUT=$(cat -)
+fi
+
+# Pokud neni promenna INPUT nastavena precte vstup ze standardniho vstupu
+out=$INPUT
+# Aplikace filtrovani na vstupni data
+if [ -n "$AFTERTIME" ]; then
+    aftertime "$out"
+fi
+
+if [ -n "$BEFORETIME" ]; then
+    beforetime "$out"
+fi
+
+if [ -n "$CURRENCY" ]; then
+    currency "$out"
+fi
+# Aplikace prikazu 
+if [ "$COMMAND" = "list-currency" ]; then
+    list_currency
+fi
+
+if [ "$COMMAND" = "profit" ]; then
+    profit
+fi
+
+if [ "$COMMAND" = "status" ]; then
+    status
+fi
+
+if [ "$COMMAND" = "list" ]; then
+    list
+fi
+# Vypise vysledek a ukoncí skript
+echo "$out"
+exit 0
+
